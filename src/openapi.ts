@@ -1,52 +1,117 @@
-// Статическая OpenAPI-спека, написанная вручную по реальным DTO и контроллеру
-// (SupportRequestDto, SupportResponseDto, support.controller.ts). Не
-// генерируется автоматически — при изменении контрактов нужно обновлять и
-// этот файл.
+// OpenAPI-спека. Пути (/hello, /support, /orders) описаны вручную — их всего
+// три, и они не выводятся автоматически без смены механизма роутинга. Но
+// СХЕМЫ данных генерируются из реального кода, а не дублируются руками:
+//   - SupportRequest — из декораторов class-validator на SupportRequestDto
+//     (class-validator-jsonschema читает те же @IsInt/@MinLength/... что и
+//     реальная валидация запроса в support.controller.ts).
+//   - Остальные схемы — из TypeScript-типов через ts-json-schema-generator
+//     (читает .ts файлы напрямую, декораторы не нужны).
+// При изменении DTO схемы в Swagger обновятся сами при следующем запуске.
+import path from 'node:path';
+import { targetConstructorToSchema } from 'class-validator-jsonschema';
+import { createGenerator } from 'ts-json-schema-generator';
+import type { SchemaObject } from 'openapi3-ts';
+import { SupportRequestDto } from './api/support/dto/supportRequest.dto';
+
+const SRC_DIR = __dirname;
+const TSCONFIG_PATH = path.join(SRC_DIR, '..', 'tsconfig.json');
+
+function generateTsSchema(
+  relativeFilePath: string,
+  typeName: string,
+): { root: SchemaObject; definitions: Record<string, SchemaObject> } {
+  const schema = createGenerator({
+    path: path.join(SRC_DIR, relativeFilePath),
+    tsconfig: TSCONFIG_PATH,
+    type: typeName,
+    expose: 'export',
+  }).createSchema(typeName);
+
+  const { definitions = {}, $schema, $ref, ...rest } = schema as Record<string, unknown>;
+  // Когда схема не сводится к единственному $ref (например, корневой тип сам
+  // примитив), rest уже содержит нужные поля — на практике для наших DTO
+  // (классов/интерфейсов) всегда приходит $ref на definitions[typeName].
+  const root = (definitions as Record<string, SchemaObject>)[typeName] ?? (rest as SchemaObject);
+
+  return { root, definitions: definitions as Record<string, SchemaObject> };
+}
+
+// JSON Schema (ts-json-schema-generator) использует "#/definitions/X",
+// OpenAPI — "#/components/schemas/X". Приводим рекурсивно.
+function retargetRefs<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(retargetRefs) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      if (key === '$ref' && typeof val === 'string') {
+        result[key] = val.replace('#/definitions/', '#/components/schemas/');
+      } else {
+        result[key] = retargetRefs(val);
+      }
+    }
+    return result as T;
+  }
+  return value;
+}
+
+const supportRequestSchema = targetConstructorToSchema(SupportRequestDto) as SchemaObject;
+
+const supportResponse = generateTsSchema('api/support/dto/supportResponse.dto.ts', 'SupportResponseDto');
+const orderResponse = generateTsSchema('api/order/dto/orderResponse.dto.ts', 'OrderResponseDto');
+
+const generatedSchemas = retargetRefs({
+  SupportRequestDto: supportRequestSchema,
+  ...supportResponse.definitions,
+  ...orderResponse.definitions,
+});
+
 export const openApiDocument = {
-  openapi: "3.0.3",
+  openapi: '3.0.3',
   info: {
-    title: "AI Support Assistant — Backend API",
-    version: "1.0.0",
+    title: 'AI Support Assistant — Backend API',
+    version: '1.0.0',
     description:
-      "Backend для AI-ассистента поддержки маркетплейса. Принимает сообщения пользователя, классифицирует намерение, отвечает из базы знаний или просит уточнить заказ/передаёт оператору.",
+      'Backend для AI-ассистента поддержки маркетплейса. Принимает сообщения пользователя, классифицирует намерение, отвечает из базы знаний или просит уточнить заказ/передаёт оператору.\n\nСхемы запросов/ответов сгенерированы из исходного кода (DTO) — см. src/openapi.ts.',
   },
-  servers: [{ url: "/" }],
+  servers: [{ url: '/' }],
   tags: [
-    { name: "health", description: "Проверка доступности сервиса" },
-    { name: "support", description: "Диалог с AI-ассистентом" },
-    { name: "orders", description: "Заказы пользователя" },
+    { name: 'health', description: 'Проверка доступности сервиса' },
+    { name: 'support', description: 'Диалог с AI-ассистентом' },
+    { name: 'orders', description: 'Заказы пользователя' },
   ],
   paths: {
-    "/hello": {
+    '/hello': {
       get: {
-        tags: ["health"],
-        summary: "Проверка, что сервис запущен",
+        tags: ['health'],
+        summary: 'Проверка, что сервис запущен',
         responses: {
-          "200": {
-            description: "Сервис работает",
-            content: { "text/plain": { schema: { type: "string", example: "hello!" } } },
+          '200': {
+            description: 'Сервис работает',
+            content: { 'text/plain': { schema: { type: 'string', example: 'hello!' } } },
           },
         },
       },
     },
-    "/support": {
+    '/support': {
       post: {
-        tags: ["support"],
-        summary: "Отправить сообщение AI-ассистенту",
+        tags: ['support'],
+        summary: 'Отправить сообщение AI-ассистенту',
         requestBody: {
           required: true,
           content: {
-            "application/json": {
-              schema: { $ref: "#/components/schemas/SupportRequest" },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/SupportRequestDto' },
               examples: {
                 default: {
-                  value: { userId: 7, sessionId: 1001, message: "Where is my order?" },
+                  value: { userId: 7, sessionId: 1001, message: 'Where is my order?' },
                 },
                 withOrderId: {
                   value: {
                     userId: 7,
                     sessionId: 1001,
-                    message: "Where is my order?",
+                    message: 'Where is my order?',
                     orderId: 3,
                   },
                 },
@@ -55,54 +120,54 @@ export const openApiDocument = {
           },
         },
         responses: {
-          "200": {
-            description: "Ответ ассистента",
+          '200': {
+            description: 'Ответ ассистента',
             content: {
-              "application/json": { schema: { $ref: "#/components/schemas/SupportResponse" } },
+              'application/json': { schema: { $ref: '#/components/schemas/SupportResponseDto' } },
             },
           },
-          "400": {
-            description: "Ошибка валидации входных данных",
+          '400': {
+            description: 'Ошибка валидации входных данных',
             content: {
-              "application/json": { schema: { $ref: "#/components/schemas/ValidationError" } },
+              'application/json': { schema: { $ref: '#/components/schemas/ValidationError' } },
             },
           },
-          "500": {
+          '500': {
             description:
-              "Внутренняя ошибка (включая недоступность или ошибку ML-сервиса — backend не различает их структурированно, см. README фронтенда)",
+              'Внутренняя ошибка (включая недоступность или ошибку ML-сервиса — backend не различает их структурированно, см. README фронтенда)',
             content: {
-              "application/json": { schema: { $ref: "#/components/schemas/GenericError" } },
+              'application/json': { schema: { $ref: '#/components/schemas/GenericError' } },
             },
           },
         },
       },
     },
-    "/orders": {
+    '/orders': {
       get: {
-        tags: ["orders"],
-        summary: "Получить заказы пользователя",
+        tags: ['orders'],
+        summary: 'Получить заказы пользователя',
         parameters: [
           {
-            name: "userId",
-            in: "query",
+            name: 'userId',
+            in: 'query',
             required: true,
-            schema: { type: "integer", minimum: 1 },
-            description: "Положительное целое число",
+            schema: { type: 'integer', minimum: 1 },
+            description: 'Положительное целое число',
           },
         ],
         responses: {
-          "200": {
-            description: "Список заказов пользователя (может быть пустым)",
+          '200': {
+            description: 'Список заказов пользователя (может быть пустым)',
             content: {
-              "application/json": {
-                schema: { type: "array", items: { $ref: "#/components/schemas/Order" } },
+              'application/json': {
+                schema: { type: 'array', items: { $ref: '#/components/schemas/OrderResponseDto' } },
               },
             },
           },
-          "400": {
-            description: "userId не передан или не является положительным целым числом",
+          '400': {
+            description: 'userId не передан или не является положительным целым числом',
             content: {
-              "application/json": { schema: { $ref: "#/components/schemas/GenericError" } },
+              'application/json': { schema: { $ref: '#/components/schemas/GenericError' } },
             },
           },
         },
@@ -111,109 +176,31 @@ export const openApiDocument = {
   },
   components: {
     schemas: {
-      SupportRequest: {
-        type: "object",
-        required: ["userId", "message", "sessionId"],
-        properties: {
-          userId: { type: "integer", description: "ID пользователя" },
-          message: {
-            type: "string",
-            minLength: 3,
-            maxLength: 300,
-            description: "Текст сообщения пользователя (3–300 символов)",
-          },
-          sessionId: { type: "integer", description: "ID сессии диалога" },
-          orderId: {
-            type: "integer",
-            nullable: true,
-            description:
-              "ID заказа — необязателен, учитывается только для категорий, где он нужен (доставка/возврат/заказ)",
-          },
-        },
-      },
-      SupportResponse: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "Текст ответа ассистента" },
-          type: {
-            type: "integer",
-            enum: [1, 2, 3, 4],
-            description:
-              "1 = ANSWER (обычный ответ), 2 = DETAILSREQUEST (нужны подробности), 3 = ORDERINFOREQUEST (нужен/неверен orderId), 4 = OPERATOR (передано оператору)",
-          },
-          technical: {
-            type: "object",
-            nullable: true,
-            description: "Диагностическая информация: модель, intent, confidence, тайминги",
-            properties: {
-              classifier: {
-                type: "object",
-                nullable: true,
-                properties: {
-                  model: { type: "string" },
-                  intent: { type: "string" },
-                  category: { type: "string" },
-                  confidence: { type: "number" },
-                  inference_ms: { type: "number" },
-                  request_ms: { type: "number" },
-                },
-              },
-              generator: {
-                type: "object",
-                nullable: true,
-                properties: {
-                  model: { type: "string" },
-                  knowledge_lookup_ms: { type: "number" },
-                  inference_ms: { type: "number" },
-                  request_ms: { type: "number" },
-                },
-              },
-              timings_ms: {
-                type: "object",
-                properties: {
-                  preprocessing: { type: "number" },
-                  preprocessing_request: { type: "number" },
-                  classification: { type: "number", nullable: true },
-                  knowledge_lookup: { type: "number", nullable: true },
-                  generation: { type: "number", nullable: true },
-                  total: { type: "number" },
-                },
-              },
-            },
-          },
-        },
-      },
-      Order: {
-        type: "object",
-        properties: {
-          id: { type: "integer" },
-          orderComposition: { type: "string" },
-          status: { type: "string" },
-          deliveryDate: { type: "string", format: "date-time" },
-        },
-      },
+      ...generatedSchemas,
+      // Эти две формы задаёт не DTO, а сами error-handler'ы
+      // (support.controller.ts / index.ts) — писать руками безопасно, так
+      // как их "контракт" — это библиотека class-validator и обычный
+      // `{ error: string }`, а не наш TS-тип.
       ValidationError: {
-        type: "object",
+        type: 'object',
         properties: {
           errors: {
-            type: "array",
+            type: 'array',
             items: {
-              type: "object",
-              additionalProperties: { type: "string" },
-              description: "Карта constraint → текст ошибки (class-validator)",
+              type: 'object',
+              additionalProperties: { type: 'string' },
+              description: 'Карта constraint → текст ошибки (class-validator)',
             },
           },
         },
         example: {
-          errors: [
-            { minLength: "message must be longer than or equal to 3 characters" },
-          ],
+          errors: [{ minLength: 'message must be longer than or equal to 3 characters' }],
         },
       },
       GenericError: {
-        type: "object",
-        properties: { error: { type: "string" } },
-        example: { error: "A positive integer userId is required." },
+        type: 'object',
+        properties: { error: { type: 'string' } },
+        example: { error: 'A positive integer userId is required.' },
       },
     },
   },
