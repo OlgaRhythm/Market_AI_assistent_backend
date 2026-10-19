@@ -8,6 +8,7 @@ import { plainToInstance } from 'class-transformer';
 import { SupportRequestDto } from './dto/supportRequest.dto';
 import { ISessionRepository } from '../session/session.repository.interface';
 import { validate } from 'class-validator';
+import { log } from '../common/trace';
 
 
 @injectable()
@@ -46,16 +47,14 @@ export class SupportController extends BaseController implements ISupportControl
 
   async supportRequest(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-        console.log("Получен запрос")
-        console.log(req.body)
         const requestData = plainToInstance(SupportRequestDto, req.body);
-        const errors = await validate(requestData) 
+        const errors = await validate(requestData)
         if (errors.length > 0) {
+            log(req.traceId, 'support request REJECTED (validation)');
             res.status(400).json({ errors: errors.map(e => e.constraints) });
             return;
         }
-        const answer = await this.supportService.handleSupportRequest(requestData);
-        console.log(answer)
+        const answer = await this.supportService.handleSupportRequest(requestData, req.traceId);
         res.send(answer);
     } catch (err) {
       next(err);
@@ -71,6 +70,7 @@ export class SupportController extends BaseController implements ISupportControl
       }
 
       const orders = await this.supportService.getOrdersForUser(userId);
+      log(req.traceId, 'orders request', { userId, count: orders.length });
       res.json(orders.map((order) => ({
         id: order.id,
         orderComposition: order.orderComposition,
