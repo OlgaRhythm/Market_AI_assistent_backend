@@ -38,6 +38,7 @@ jobs:
       - name: Compile TypeScript
         run: npm run build
       - name: Build Docker image
+        if: ${{ github.repository != 'OlgaRhythm/Market_AI_assistent_backend' || github.event_name != 'push' || github.ref != 'refs/heads/main' }}
         run: docker build --tag app:ci .
 
   security:
@@ -94,3 +95,71 @@ jobs:
           name: security-reports
           path: ${{ runner.temp }}/ci-reports/
           retention-days: 14
+
+  release:
+    name: Release backend image
+    needs: [verify, security]
+    if: ${{ github.repository == 'OlgaRhythm/Market_AI_assistent_backend' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    concurrency:
+      group: backend-release-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Build and package Linux image
+        shell: bash
+        run: |
+          revision="${GITHUB_SHA:0:12}"
+          image="market-ai-assistant-backend:sha-$revision"
+          asset="backend-linux-amd64-$revision.tar.gz"
+          mkdir -p release
+          docker build --platform linux/amd64 \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag "$image" .
+          docker save "$image" | gzip -1 > "release/$asset"
+
+          cat > "release/compose.backend-$revision.yml" <<EOF
+          services:
+            backend:
+              build: !reset null
+              image: $image
+              pull_policy: never
+          EOF
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          revision="${GITHUB_SHA:0:12}"
+          tag="backend-$revision"
+          asset="backend-linux-amd64-$revision.tar.gz"
+          override="compose.backend-$revision.yml"
+
+          cat > "$RUNNER_TEMP/backend-release-notes.md" <<EOF
+          Backend Docker image for Linux amd64, built from commit $GITHUB_SHA.
+
+          Download both assets, then load the image:
+
+              docker image load -i $asset
+
+          From the Compose stack directory, with the override file next to docker-compose.yml, update the backend on an already running stand:
+
+              docker compose -f docker-compose.yml -f $override up -d --no-deps --no-build backend
+          EOF
+
+          if draft=$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [ "$draft" = true ]; then
+              gh release upload "$tag" "release/$asset" "release/$override" --clobber
+              gh release edit "$tag" --draft=false
+            else
+              echo "Release $tag already exists."
+            fi
+          else
+            gh release create "$tag" "release/$asset" "release/$override" \
+              --target "$GITHUB_SHA" --title "Backend image $revision" \
+              --notes-file "$RUNNER_TEMP/backend-release-notes.md"
+          fi
