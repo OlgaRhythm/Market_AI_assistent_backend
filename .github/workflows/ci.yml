@@ -97,69 +97,64 @@ jobs:
           retention-days: 14
 
   release:
-    name: Release backend image
+    name: Release Compose stack
     needs: [verify, security]
     if: ${{ github.repository == 'OlgaRhythm/Market_AI_assistent_backend' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: write
     concurrency:
-      group: backend-release-${{ github.sha }}
+      group: stack-release-${{ github.sha }}
       cancel-in-progress: false
+    env:
+      FRONTEND_SHA: 3f31732919c3ed9c42e74e53472c3c1456ec9b97
+      MOCK_SHA: 5bb98d4a6f1d64be7cd4c60c7945475771b05268
+      ML_SHA: f8a6b98ae6073145b59828060b5516af8628b236
     steps:
       - uses: actions/checkout@v6
         with:
+          path: source/backend
           persist-credentials: false
-      - name: Build and package Linux image
-        shell: bash
+      - uses: actions/checkout@v6
+        with:
+          repository: OlgaRhythm/ai-assistent-frontend
+          ref: ${{ env.FRONTEND_SHA }}
+          path: source/frontend
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: OlgaRhythm/ai-assistent-marketplace-mock
+          ref: ${{ env.MOCK_SHA }}
+          path: source/mock
+          persist-credentials: false
+      - name: Check out the tested ML revision
         run: |
-          revision="${GITHUB_SHA:0:12}"
-          image="market-ai-assistant-backend:sha-$revision"
-          asset="backend-linux-amd64-$revision.tar.gz"
-          mkdir -p release
-          docker build --platform linux/amd64 \
-            --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag "$image" .
-          docker save "$image" | gzip -1 > "release/$asset"
-
-          cat > "release/compose.backend-$revision.yml" <<EOF
-          services:
-            backend:
-              build: !reset null
-              image: $image
-              pull_policy: never
-          EOF
+          git init source/ml
+          git -C source/ml fetch --no-tags --depth=1 https://gitlab.com/Elitra/ai-assistant.git "$ML_SHA"
+          git -C source/ml checkout --detach FETCH_HEAD
+          test "$(git -C source/ml rev-parse HEAD)" = "$ML_SHA"
+      - name: Build and package the stack
+        run: bash source/backend/release/pack-stack.sh source "$RUNNER_TEMP/stack-release"
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
-          revision="${GITHUB_SHA:0:12}"
-          tag="backend-$revision"
-          asset="backend-linux-amd64-$revision.tar.gz"
-          override="compose.backend-$revision.yml"
-
-          cat > "$RUNNER_TEMP/backend-release-notes.md" <<EOF
-          Backend Docker image for Linux amd64, built from commit $GITHUB_SHA.
-
-          Download both assets, then load the image:
-
-              docker image load -i $asset
-
-          From the Compose stack directory, with the override file next to docker-compose.yml, update the backend on an already running stand:
-
-              docker compose -f docker-compose.yml -f $override up -d --no-deps --no-build backend
-          EOF
+          tag="stack-${GITHUB_SHA:0:12}"
+          output="$RUNNER_TEMP/stack-release"
+          assets=("$output"/assets/*)
 
           if draft=$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null); then
             if [ "$draft" = true ]; then
-              gh release upload "$tag" "release/$asset" "release/$override" --clobber
+              gh release upload "$tag" "${assets[@]}" --clobber
               gh release edit "$tag" --draft=false
             else
               echo "Release $tag already exists."
             fi
           else
-            gh release create "$tag" "release/$asset" "release/$override" \
-              --target "$GITHUB_SHA" --title "Backend image $revision" \
-              --notes-file "$RUNNER_TEMP/backend-release-notes.md"
+            gh release create "$tag" "${assets[@]}" \
+              --target "$GITHUB_SHA" --title "Compose stack ${GITHUB_SHA:0:12}" \
+              --notes-file "$output/RELEASE.md"
           fi

@@ -1,0 +1,48 @@
+services:
+  ml:
+    build: !reset null
+    image: ai-assistant-stack-ml:${STACK_REVISION:?Extract the release configuration}
+    pull_policy: never
+    ports: !override
+      - "127.0.0.1:8000:8000"
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_FALLBACK_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+
+  backend:
+    build: !reset null
+    image: ai-assistant-stack-backend:${STACK_REVISION:?Extract the release configuration}
+    pull_policy: never
+    ports: !override
+      - "127.0.0.1:5005:5005"
+
+  marketplace-mock:
+    build: !reset null
+    image: ai-assistant-stack-marketplace-mock:${STACK_REVISION:?Extract the release configuration}
+    pull_policy: never
+    ports: !override
+      - "127.0.0.1:8081:8081"
+
+  frontend:
+    build: !reset null
+    image: ai-assistant-stack-frontend:${STACK_REVISION:?Extract the release configuration}
+    pull_policy: never
+    ports: !override
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
+
+  webhook-receiver:
+    build: !reset null
+    image: ai-assistant-stack-webhook-receiver:${STACK_REVISION:?Extract the release configuration}
+    pull_policy: never
+
+  loki:
+    ports: !override
+      - "127.0.0.1:3100:3100"
+
+  prometheus:
+    ports: !override
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    ports: !override
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
